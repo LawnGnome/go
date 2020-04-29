@@ -36,6 +36,7 @@ import (
 	"cmd/internal/obj"
 	"cmd/internal/objabi"
 	"cmd/internal/src"
+	"runtime"
 )
 
 var sharedProgArray = new([10000]obj.Prog) // *T instead of T to work around issue 19839
@@ -59,8 +60,15 @@ type Progs struct {
 func newProgs(fn *Node, worker int) *Progs {
 	pp := new(Progs)
 	if Ctxt.CanReuseProgs() {
-		sz := len(sharedProgArray) / nBackendWorkers
-		pp.progcache = sharedProgArray[sz*worker : sz*(worker+1)]
+		if jsClient != nil {
+			// FIXME: this should have some way of referring to sharedProgArray,
+			// rather than allocating each time.
+			sz := 10000 / runtime.NumCPU()
+			pp.progcache = make([]obj.Prog, sz)
+		} else {
+			sz := len(sharedProgArray) / nBackendWorkers
+			pp.progcache = sharedProgArray[sz*worker : sz*(worker+1)]
+		}
 	}
 	pp.curfn = fn
 

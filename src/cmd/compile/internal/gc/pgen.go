@@ -13,6 +13,7 @@ import (
 	"cmd/internal/src"
 	"cmd/internal/sys"
 	"internal/race"
+	"log"
 	"math/rand"
 	"sort"
 	"sync"
@@ -24,6 +25,7 @@ import (
 var (
 	nBackendWorkers int     // number of concurrent backend workers, set by a compiler flag
 	compilequeue    []*Node // functions waiting to be compiled
+	jsClient        *jobserverClient
 )
 
 func emitptrargsmap(fn *Node) {
@@ -283,7 +285,7 @@ func compile(fn *Node) {
 // they are enqueued in compilequeue,
 // which is drained by compileFunctions.
 func compilenow() bool {
-	return nBackendWorkers == 1 && Debug_compilelater == 0
+	return nBackendWorkers == 1 && Debug_compilelater == 0 && jsClient == nil
 }
 
 const maxStackSize = 1 << 30
@@ -327,6 +329,14 @@ func init() {
 	if race.Enabled {
 		rand.Seed(time.Now().UnixNano())
 	}
+
+	// This needs to be as early as possible, since FD 3 might end up being
+	// something opened by the program. This probably isn't early enough, but
+	// it's a start.
+	var err error
+	if jsClient, err = newJobserverClient(); err != nil {
+		log.Printf("cannot initialise make jobserver client: %v", err)
+	}
 }
 
 // compileFunctions compiles all functions in compilequeue.
@@ -353,20 +363,35 @@ func compileFunctions() {
 		}
 		var wg sync.WaitGroup
 		Ctxt.InParallel = true
-		c := make(chan *Node, nBackendWorkers)
-		for i := 0; i < nBackendWorkers; i++ {
-			wg.Add(1)
-			go func(worker int) {
-				for fn := range c {
-					compileSSA(fn, worker)
-				}
-				wg.Done()
-			}(i)
+
+		if jsClient != nil {
+			for i, fn := range compilequeue {
+				wg.Add(1)
+				go func() {
+					token, _ := jsClient.Acquire()
+					// TODO: actually do something with err.
+					defer token.Release()
+					compileSSA(fn, i)
+					wg.Done()
+				}()
+			}
+		} else {
+			c := make(chan *Node, nBackendWorkers)
+			for i := 0; i < nBackendWorkers; i++ {
+				wg.Add(1)
+				go func(worker int) {
+					for fn := range c {
+						compileSSA(fn, worker)
+					}
+					wg.Done()
+				}(i)
+			}
+			for _, fn := range compilequeue {
+				c <- fn
+			}
+			close(c)
 		}
-		for _, fn := range compilequeue {
-			c <- fn
-		}
-		close(c)
+
 		compilequeue = nil
 		wg.Wait()
 		Ctxt.InParallel = false

@@ -65,7 +65,9 @@ func initssaconfig() {
 	}
 	ssaConfig.SoftFloat = thearch.SoftFloat
 	ssaConfig.Race = flag_race
-	ssaCaches = make([]ssa.Cache, nBackendWorkers)
+	if jsClient == nil {
+		ssaCaches = make([]ssa.Cache, nBackendWorkers)
+	}
 
 	// Set up some runtime functions we'll need to call.
 	assertE2I = sysfunc("assertE2I")
@@ -327,7 +329,11 @@ func buildssa(fn *Node, worker int) *ssa.Func {
 	s.config = ssaConfig
 	s.f.Type = fn.Type
 	s.f.Config = ssaConfig
-	s.f.Cache = &ssaCaches[worker]
+	if jsClient != nil {
+		s.f.Cache = new(ssa.Cache)
+	} else {
+		s.f.Cache = &ssaCaches[worker]
+	}
 	s.f.Cache.Reset()
 	s.f.DebugTest = s.f.DebugHashMatch("GOSSAHASH", name)
 	s.f.Name = name
